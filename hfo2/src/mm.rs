@@ -38,7 +38,7 @@ use crate::addr::*;
 use crate::arch::*;
 use crate::init::*;
 use crate::layout::*;
-use crate::mpool::MPool;
+use crate::mpool::*;
 use crate::page::*;
 use crate::spinlock::{SpinLock, SpinLockGuard};
 use crate::types::*;
@@ -80,7 +80,7 @@ extern "C" {
 
     fn arch_mm_combine_table_entry_attrs(table_attrs: u64, block_attrs: u64) -> u64;
 
-    fn plat_console_mm_init(stage1_locked: mm_stage1_locked, mpool: *const MPool);
+    fn plat_console_mm_init(stage1_locked: mm_stage1_locked, mpool: *mut Pool);
 }
 
 bitflags! {
@@ -375,7 +375,7 @@ impl PageTableEntry {
     /// # Safety
     ///
     /// After a page table entry is freed, it's value is undefined.
-    unsafe fn free(&mut self, level: u8, mpool: &MPool) {
+    unsafe fn free<P: MPoolT>(&mut self, level: u8, mpool: &mut P) {
         if let Ok(table) = self.as_table_mut(level) {
             // Recursively free any subtables.
             for pte in table.iter_mut() {
@@ -392,12 +392,12 @@ impl PageTableEntry {
     /// flushes the TLB, then writes the actual new value.  This is to prevent cases where CPUs have
     /// different 'valid' values in their TLBs, which may result in issues for example in cache
     /// coherency.
-    fn replace<S: Stage>(
+    fn replace<S: Stage, P: MPoolT>(
         &mut self,
         new_pte: PageTableEntry,
         begin: ptable_addr_t,
         level: u8,
-        mpool: &MPool,
+        mpool: &mut P,
     ) {
         let inner = self.inner;
 
@@ -425,11 +425,11 @@ impl PageTableEntry {
     /// is, if it does not yet point to another table.
     ///
     /// Returns a pointer to the table the entry now points to.
-    fn populate_table<S: Stage>(
+    fn populate_table<S: Stage, P: MPoolT>(
         &mut self,
         begin: ptable_addr_t,
         level: u8,
-        mpool: &MPool,
+        mpool: &mut P,
     ) -> Result<(), ()> {
         // Just return if it's already populated.
         if self.is_table(level) {
@@ -474,14 +474,14 @@ impl PageTableEntry {
 
         // Replace the pte entry, doing a break-before-make if needed.
         let table = unsafe { Self::table(level, page) };
-        self.replace::<S>(table, begin, level, mpool);
+        self.replace::<S, _>(table, begin, level, mpool);
 
         Ok(())
     }
 
     /// Defragments the given PTE by recursively replacing any tables with blocks or absent entries
     /// where possible.
-    fn defrag(&mut self, level: u8, mpool: &MPool) -> Result<u64, ()> {
+    fn defrag<P: MPoolT>(&mut self, level: u8, mpool: &mut P) -> Result<u64, ()> {
         let attrs = self.attrs(level);
 
         if self.is_block(level) {
@@ -618,14 +618,14 @@ impl RawPageTable {
     ///
     /// This function calls itself recursively if it needs to update additional levels, but the
     /// recursion is bound by the maximum number of levels in a page table.
-    fn map_level<S: Stage>(
+    fn map_level<S: Stage, P: MPoolT>(
         &mut self,
         begin: ptable_addr_t,
         end: ptable_addr_t,
         attrs: u64,
         level: u8,
         flags: Flags,
-        mpool: &MPool,
+        mpool: &mut P,
     ) -> Result<(), ()> {
         let entry_size = addr::entry_size(level);
         let commit = flags.contains(Flags::COMMIT);
@@ -661,7 +661,7 @@ impl RawPageTable {
                     } else {
                         PageTableEntry::block(level, pa_init(begin), attrs)
                     };
-                    pte.replace::<S>(new_pte, begin, level, mpool);
+                    pte.replace::<S, _>(new_pte, begin, level, mpool);
                 }
 
                 continue;
@@ -669,20 +669,20 @@ impl RawPageTable {
 
             // If the entry is already a subtable get it; otherwise replace it with an equivalent
             // subtable and get that.
-            pte.populate_table::<S>(begin, level, mpool)?;
+            pte.populate_table::<S, _>(begin, level, mpool)?;
 
             // Since `pte` is just populated, it should be a table.
             let new_table = pte.as_table_mut(level).unwrap();
 
             // Recurse to map/unmap the appropriate entries within the subtable.
-            new_table.map_level::<S>(begin, end, attrs, level - 1, flags, mpool)?;
+            new_table.map_level::<S, _>(begin, end, attrs, level - 1, flags, mpool)?;
 
             // If the subtable is now empty, replace it with an absent entry at this level. We never
             // need to do break-before-makes here because we are assigning an absent value.
             //
             // TODO(@jeehoonkang): I think we should do break-before-makes here due to reordering.
             if commit && unmap && new_table.is_empty(level - 1) {
-                pte.replace::<S>(PageTableEntry::absent(level), begin, level, mpool);
+                pte.replace::<S, _>(PageTableEntry::absent(level), begin, level, mpool);
             }
         }
 
@@ -764,7 +764,7 @@ impl<S: Stage> PageTable<S> {
     }
 
     /// Creates a new page table.
-    pub fn new(mpool: &MPool) -> Result<Self, ()> {
+    pub fn new<P: MPoolT>(mpool: &mut P) -> Result<Self, ()> {
         let root_table_count = S::root_table_count();
         let mut pages = mpool.alloc_pages(root_table_count as usize, root_table_count as usize)?;
 
@@ -784,7 +784,7 @@ impl<S: Stage> PageTable<S> {
     }
 
     /// Frees all memory associated with the give page table.
-    pub fn drop(mut self, mpool: &MPool) {
+    pub fn drop<P: MPoolT>(mut self, mpool: &mut P) {
         let level = S::max_level();
 
         for page_table in self.deref_mut().iter_mut() {
@@ -831,14 +831,14 @@ impl<S: Stage> PageTable<S> {
     /// Updates the page table from the root to map the given address range to a physical range
     /// using the provided (architecture-specific) attributes. Or if MM_FLAG_UNMAP is set, unmap the
     /// given range instead.
-    fn map_root(
+    fn map_root<P: MPoolT>(
         &mut self,
         begin: ptable_addr_t,
         end: ptable_addr_t,
         attrs: u64,
         root_level: u8,
         flags: Flags,
-        mpool: &MPool,
+        mpool: &mut P,
     ) -> Result<(), ()> {
         let root_table_size = addr::entry_size(root_level);
 
@@ -846,7 +846,7 @@ impl<S: Stage> PageTable<S> {
         let begins = BlockIter::new(begin, end, root_table_size);
 
         for (table, begin) in tables.zip(begins) {
-            table.map_level::<S>(begin, end, attrs, root_level - 1, flags, mpool)?;
+            table.map_level::<S, _>(begin, end, attrs, root_level - 1, flags, mpool)?;
         }
 
         Ok(())
@@ -854,13 +854,13 @@ impl<S: Stage> PageTable<S> {
 
     /// Updates the given table such that the given physical address range is mapped or not mapped
     /// into the address space with the architecture-agnostic mode provided.
-    fn identity_update(
+    fn identity_update<P: MPoolT>(
         &mut self,
         begin: paddr_t,
         end: paddr_t,
         attrs: u64,
         flags: Flags,
-        mpool: &MPool,
+        mpool: &mut P,
     ) -> Result<(), ()> {
         let root_level = S::max_level() + 1;
         let ptable_end = S::root_table_count() as usize * addr::entry_size(root_level);
@@ -890,7 +890,7 @@ impl<S: Stage> PageTable<S> {
 
     /// Defragments the given page table by converting page table references to blocks whenever
     /// possible.
-    pub fn defrag(&mut self, mpool: &MPool) {
+    pub fn defrag<P: MPoolT>(&mut self, mpool: &mut P) {
         let level = S::max_level();
 
         // Loop through each entry in the table. If it points to another table, check if that table
@@ -902,19 +902,19 @@ impl<S: Stage> PageTable<S> {
         }
     }
 
-    pub fn identity_map(
+    pub fn identity_map<P: MPoolT>(
         &mut self,
         begin: paddr_t,
         end: paddr_t,
         mode: Mode,
-        mpool: &MPool,
+        mpool: &mut P,
     ) -> Result<(), ()> {
         self.identity_update(begin, end, S::mode_to_attrs(mode), Flags::empty(), mpool)
     }
 
     /// Updates the VM's table such that the given physical address range has no connection to the
     /// VM.
-    pub fn unmap(&mut self, begin: paddr_t, end: paddr_t, mpool: &MPool) -> Result<(), ()> {
+    pub fn unmap<P: MPoolT>(&mut self, begin: paddr_t, end: paddr_t, mpool: &mut P) -> Result<(), ()> {
         self.identity_update(
             begin,
             end,
@@ -1031,7 +1031,7 @@ pub struct MemoryManager {
 }
 
 impl MemoryManager {
-    pub fn new(mpool: &MPool) -> Option<Self> {
+    pub fn new(mpool: &mut Pool) -> Option<Self> {
         dlog!(
             "text: {:#x} - {:#x}\n",
             pa_addr(unsafe { layout_text_begin() }),
@@ -1112,7 +1112,7 @@ impl MemoryManager {
         }
     }
 
-    pub fn vm_unmap_hypervisor(ptable: &mut PageTable<Stage2>, mpool: &MPool) -> Result<(), ()> {
+    pub fn vm_unmap_hypervisor<P: MPoolT>(ptable: &mut PageTable<Stage2>, mpool: &mut P) -> Result<(), ()> {
         // TODO: If we add pages dynamically, they must be included here too.
         ptable.unmap(
             unsafe { layout_text_begin() },
@@ -1230,9 +1230,9 @@ pub unsafe extern "C" fn mm_identity_map(
     begin: paddr_t,
     end: paddr_t,
     mode: Mode,
-    mpool: *const MPool,
+    mpool: *mut Pool,
 ) -> *mut usize {
-    let mpool = &*mpool;
+    let mpool = &mut *mpool;
     stage1_locked
         .identity_map(begin, end, mode, mpool)
         .map(|_| pa_addr(begin) as *mut _)

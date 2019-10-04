@@ -48,6 +48,6 @@ struct boot_params_update {
 };
 
 bool plat_get_boot_params(struct mm_stage1_locked stage1_locked,
-			  struct boot_params *p, struct mpool *ppool);
+			  struct boot_params *p, struct pool *ppool);
 bool plat_update_boot_params(struct mm_stage1_locked stage1_locked,
-			     struct boot_params_update *p, struct mpool *ppool);
+			     struct boot_params_update *p, struct pool *ppool);

@@ -24,6 +24,23 @@ use crate::spinlock::SpinLock;
 use crate::types::*;
 use crate::utils::*;
 
+pub trait MPoolT {
+    /// Allocates a page.
+    fn alloc(&mut self) -> Result<Page, ()>;
+
+    /// Allocates a number of contiguous and aligned pages.
+    fn alloc_pages(&mut self, size: usize, align: usize) -> Result<Pages, ()>;
+
+    /// Frees a page back into the given page pool, making it available for reuse.
+    ///
+    /// This is meant to be used for freeing single pages. To free multiple pages, call
+    /// `free_pages()` instead.
+    fn free(&mut self, page: Page);
+
+    /// Frees a number of contiguous pages to the given page pool.
+    fn free_pages(&mut self, pages: Pages);
+}
+
 #[repr(C)]
 struct Chunk {
     entry: ListEntry,
@@ -91,9 +108,10 @@ impl Pool {
             entry_list: List::new(),
         }
     }
+}
 
-    /// Allocates a page.
-    pub fn alloc(&mut self) -> Result<Page, ()> {
+impl MPoolT for Pool {
+    fn alloc(&mut self) -> Result<Page, ()> {
         if let Some(entry) = unsafe { self.entry_list.pop() } {
             #[allow(clippy::cast_ptr_alignment)]
             return Ok(unsafe { Page::from_raw(entry as *mut RawPage) });
@@ -119,8 +137,7 @@ impl Pool {
         Ok(page)
     }
 
-    /// Allocates a number of contiguous and aligned pages.
-    pub fn alloc_pages(&mut self, size: usize, align: usize) -> Result<Pages, ()> {
+    fn alloc_pages(&mut self, size: usize, align: usize) -> Result<Pages, ()> {
         if size == 1 && align == 1 {
             return self
                 .alloc()
@@ -164,22 +181,78 @@ impl Pool {
         Ok(unsafe { Pages::from_raw(start as *mut RawPage, size) })
     }
 
-    /// Frees a page back into the given page pool, making it available for reuse.
-    ///
-    /// This is meant to be used for freeing single pages. To free multiple pages, call
-    /// `free_pages()` instead.
-    pub fn free(&mut self, mut page: Page) {
+    fn free(&mut self, mut page: Page) {
         let entry = unsafe { &*(page.deref_mut() as *mut RawPage as *mut Entry) };
         mem::forget(page);
         unsafe { self.entry_list.push(entry) };
     }
 
-    /// Frees a number of contiguous pages to the given page pool.
-    pub fn free_pages(&mut self, pages: Pages) {
+    fn free_pages(&mut self, pages: Pages) {
         let size = pages.len();
         let chunk = unsafe { &mut *(pages.into_raw() as *mut Chunk) };
         chunk.size = size;
         unsafe { self.chunk_list.push(chunk) };
+    }
+}
+
+pub struct MPool2<'a> {
+    pool: Pool,
+    fallback: &'a SpinLock<Pool>,
+}
+
+impl<'a> MPool2<'a> {
+    pub fn new(fallback: &'a SpinLock<Pool>) -> Self {
+        Self {
+            pool: Pool::new(),
+            fallback,
+        }
+    }
+}
+
+impl<'a> MPoolT for MPool2<'a> {
+    fn alloc(&mut self) -> Result<Page, ()> {
+        if let Ok(result) = self.pool.alloc() {
+            return Ok(result);
+        }
+
+        self.fallback.alloc()
+    }
+
+    fn alloc_pages(&mut self, count: usize, align: usize) -> Result<Pages, ()> {
+        if let Ok(result) = self.pool.alloc_pages(count, align) {
+            return Ok(result);
+        }
+
+        self.fallback.alloc_pages(count, align)
+    }
+
+    fn free(&mut self, page: Page) {
+        self.pool.free(page);
+    }
+
+    fn free_pages(&mut self, pages: Pages) {
+        self.pool.free_pages(pages);
+    }
+}
+
+impl<'a> Drop for MPool2<'a> {
+    fn drop(&mut self) {
+        let pool = self.pool.get_mut();
+        let mut fallback = self.fallback.lock();
+
+        // Merge the freelist into the fallback.
+        while let Some(entry) = unsafe { pool.entry_list.pop() } {
+            unsafe {
+                fallback.entry_list.push(&*entry);
+            }
+        }
+
+        // Merge the chunk list into the fallback.
+        while let Some(chunk) = unsafe { pool.chunk_list.pop() } {
+            unsafe {
+                fallback.chunk_list.push(&*chunk);
+            }
+        }
     }
 }
 

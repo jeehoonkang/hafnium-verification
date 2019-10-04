@@ -39,7 +39,7 @@ paddr_t plat_get_fdt_addr(void)
  */
 #pragma weak plat_get_initrd_range
 void plat_get_initrd_range(struct mm_stage1_locked stage1_locked,
-			   paddr_t *begin, paddr_t *end, struct mpool *ppool)
+			   paddr_t *begin, paddr_t *end, struct pool *ppool)
 {
 	(void)stage1_locked;
 	(void)ppool;
@@ -66,7 +66,7 @@ uintreg_t plat_get_kernel_arg(void)
  */
 #pragma weak plat_get_boot_params
 bool plat_get_boot_params(struct mm_stage1_locked stage1_locked,
-			  struct boot_params *p, struct mpool *ppool)
+			  struct boot_params *p, struct pool *ppool)
 {
 	struct fdt_header *fdt;
 	struct fdt_node n;
@@ -115,7 +115,7 @@ out_unmap_fdt:
  */
 #pragma weak plat_update_boot_params
 bool plat_update_boot_params(struct mm_stage1_locked stage1_locked,
-			     struct boot_params_update *p, struct mpool *ppool)
+			     struct boot_params_update *p, struct pool *ppool)
 {
 	return fdt_patch(stage1_locked, plat_get_fdt_addr(), p, ppool);
 }

@@ -16,6 +16,7 @@
 
 use core::mem::MaybeUninit;
 use core::ptr;
+use core::ops::DerefMut;
 
 use crate::addr::*;
 use crate::arch::*;
@@ -88,20 +89,20 @@ unsafe extern "C" fn one_time_init(c: *const Cpu) -> *const Cpu {
     arch_one_time_init();
     arch_cpu_module_init();
 
-    let ppool = MPool::new();
+    let mut ppool = Pool::new();
     ppool.free_pages(Pages::from_raw(
         PTABLE_BUF.get_mut().as_mut_ptr(),
         HEAP_PAGES,
     ));
 
-    let mm = MemoryManager::new(&ppool).expect("mm_init failed");
+    let mm = MemoryManager::new(&mut ppool).expect("mm_init failed");
 
     // Enable locks now that mm is initialised.
     dlog_enable_lock();
     mpool_enable_locks();
 
     // TODO(HfO2): doesn't need to lock, actually
-    let params = boot_params_get(&mut mm.hypervisor_ptable.lock(), &ppool)
+    let params = boot_params_get(&mut mm.hypervisor_ptable.lock(), &mut ppool)
         .expect("unable to retrieve boot params");
 
     let cpum = CpuManager::new(
@@ -139,7 +140,7 @@ unsafe extern "C" fn one_time_init(c: *const Cpu) -> *const Cpu {
             params.initrd_begin,
             params.initrd_end,
             Mode::R,
-            &hypervisor().mpool,
+            hypervisor().mpool.lock().deref_mut(),
         )
         .expect("unable to map initrd in");
 
@@ -155,7 +156,7 @@ unsafe extern "C" fn one_time_init(c: *const Cpu) -> *const Cpu {
         &mut hypervisor_ptable,
         &cpio,
         params.kernel_arg,
-        &hypervisor().mpool,
+        hypervisor().mpool.lock().deref_mut(),
     )
     .expect("unable to load primary VM");
 
@@ -172,15 +173,15 @@ unsafe extern "C" fn one_time_init(c: *const Cpu) -> *const Cpu {
         &cpio,
         &params,
         &mut update,
-        &hypervisor().mpool,
+        hypervisor().mpool.lock().deref_mut(),
     )
     .expect("unable to load secondary VMs");
 
     // Prepare to run by updating bootparams as seen by primary VM.
-    boot_params_update(&mut hypervisor_ptable, &mut update, &hypervisor().mpool)
+    boot_params_update(&mut hypervisor_ptable, &mut update, hypervisor().mpool.lock().deref_mut())
         .expect("plat_update_boot_params failed");
 
-    hypervisor_ptable.defrag(&hypervisor().mpool);
+    hypervisor_ptable.defrag(hypervisor().mpool.lock().deref_mut());
 
     // Enable TLB invalidation for VM page table updates.
     mm_vm_enable_invalidation();

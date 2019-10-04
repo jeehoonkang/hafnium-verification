@@ -35,7 +35,7 @@ use crate::utils::*;
 use crate::vm::*;
 
 pub struct Hypervisor {
-    pub mpool: MPool,
+    pub mpool: SpinLock<Pool>,
     pub memory_manager: MemoryManager,
     pub cpu_manager: CpuManager,
     pub vm_manager: VmManager,
@@ -44,13 +44,13 @@ pub struct Hypervisor {
 impl Hypervisor {
     // Creates a new hypervisor instance.
     pub fn new(
-        mpool: MPool,
+        mpool: Pool,
         memory_manager: MemoryManager,
         cpu_manager: CpuManager,
         vm_manager: VmManager,
     ) -> Self {
         Self {
-            mpool,
+            mpool: SpinLock::new(mpool),
             memory_manager,
             cpu_manager,
             vm_manager,
@@ -754,7 +754,7 @@ impl Hypervisor {
 
     /// Clears a region of physical memory by overwriting it with zeros. The data is flushed from
     /// the cache so the memory has been cleared across the system.
-    fn clear_memory(&self, begin: paddr_t, end: paddr_t, ppool: &MPool) -> Result<(), ()> {
+    fn clear_memory<P: MPoolT>(&self, begin: paddr_t, end: paddr_t, ppool: &mut P) -> Result<(), ()> {
         let mut hypervisor_ptable = self.memory_manager.hypervisor_ptable.lock();
         let size = pa_difference(begin, end);
         let region = pa_addr(begin);
@@ -828,7 +828,7 @@ impl Hypervisor {
 
         // Create a local pool so any freed memory can't be used by another thread. This is to
         // ensure the original mapping can be restored if any stage of the process fails.
-        let local_page_pool = MPool::new_with_fallback(&self.mpool);
+        let local_page_pool = MPool2::new(&self.mpool);
 
         let (mut from_inner, mut to_inner) = SpinLock::lock_both(&from.inner, &to.inner);
 
@@ -864,16 +864,16 @@ impl Hypervisor {
         // First update the mapping for the sender so there is not overlap with the recipient.
         from_inner
             .ptable
-            .identity_map(pa_begin, pa_end, from_mode, &local_page_pool)?;
+            .identity_map(pa_begin, pa_end, from_mode, &mut local_page_pool)?;
 
         // Clear the memory so no VM or device can see the previous contents.
         if self
-            .clear_memory(pa_begin, pa_end, &local_page_pool)
+            .clear_memory(pa_begin, pa_end, &mut local_page_pool)
             .is_err()
         {
             from_inner
                 .ptable
-                .identity_map(pa_begin, pa_end, orig_from_mode, &local_page_pool)
+                .identity_map(pa_begin, pa_end, orig_from_mode, &mut local_page_pool)
                 .unwrap();
 
             return Err(());
@@ -882,15 +882,15 @@ impl Hypervisor {
         // Complete the transfer by mapping the memory into the recipient.
         if to_inner
             .ptable
-            .identity_map(pa_begin, pa_end, to_mode, &local_page_pool)
+            .identity_map(pa_begin, pa_end, to_mode, &mut local_page_pool)
             .is_err()
         {
             // TODO: partial defrag of failed range.
             // Recover any memory consumed in failed mapping.
-            from_inner.ptable.defrag(&local_page_pool);
+            from_inner.ptable.defrag(&mut local_page_pool);
             from_inner
                 .ptable
-                .identity_map(pa_begin, pa_end, orig_from_mode, &local_page_pool)
+                .identity_map(pa_begin, pa_end, orig_from_mode, &mut local_page_pool)
                 .unwrap();
 
             return Err(());

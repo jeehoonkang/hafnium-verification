@@ -150,14 +150,14 @@ impl Mailbox {
     /// The stage-1 page tables must be locked so memory cannot be taken by
     /// another core which could result in this transaction being unable to
     /// roll back in the case of an error.
-    pub fn configure_stage1(
+    pub fn configure_stage1<P: MPoolT>(
         &mut self,
         pa_send_begin: paddr_t,
         pa_send_end: paddr_t,
         pa_recv_begin: paddr_t,
         pa_recv_end: paddr_t,
         hypervisor_ptable: &SpinLock<PageTable<Stage1>>,
-        local_page_pool: &MPool,
+        local_page_pool: &mut P,
     ) -> Result<(), ()> {
         let mut hypervisor_ptable = hypervisor_ptable.lock();
         let mut ptable = guard(&mut hypervisor_ptable, |_| ());
@@ -279,12 +279,12 @@ impl VmInner {
         pa_recv_end: paddr_t,
         orig_recv_mode: Mode,
         hypervisor_ptable: &SpinLock<PageTable<Stage1>>,
-        fallback_mpool: &MPool,
+        fallback_mpool: &SpinLock<Pool>,
     ) -> Result<(), ()> {
         // Create a local pool so any freed memory can't be used by another
         // thread. This is to ensure the original mapping can be restored if
         // any stage of the process fails.
-        let local_page_pool: MPool = MPool::new_with_fallback(fallback_mpool);
+        let local_page_pool = MPool2::new(fallback_mpool);
         let mut ptable = guard(&mut self.ptable, |_| ());
 
         // Take memory ownership away from the VM and mark as shared.
@@ -326,7 +326,7 @@ impl VmInner {
             pa_recv_begin,
             pa_recv_end,
             hypervisor_ptable,
-            &local_page_pool,
+            &mut local_page_pool,
         )?;
 
         mem::forget(ptable);
@@ -344,7 +344,7 @@ impl VmInner {
         send: ipaddr_t,
         recv: ipaddr_t,
         hypervisor_ptable: &SpinLock<PageTable<Stage1>>,
-        fallback_mpool: &MPool,
+        fallback_mpool: &SpinLock<Pool>,
     ) -> Result<(), ()> {
         // Fail if addresses are not page-aligned.
         if !is_aligned(ipa_addr(send), PAGE_SIZE) || !is_aligned(ipa_addr(recv), PAGE_SIZE) {
@@ -542,7 +542,7 @@ impl VmManager {
         }
     }
 
-    pub fn new_vm(&mut self, vcpu_count: spci_vcpu_count_t, ppool: &MPool) -> Option<&mut Vm> {
+    pub fn new_vm<P: MPoolT>(&mut self, vcpu_count: spci_vcpu_count_t, ppool: &mut P) -> Option<&mut Vm> {
         if self.vms.is_full() {
             return None;
         }

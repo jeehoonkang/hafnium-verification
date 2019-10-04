@@ -21,6 +21,11 @@
 
 #include "hf/spinlock.h"
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wvisibility"
+struct pool;
+#pragma GCC diagnostic pop
+
 struct mpool {
 	struct spinlock lock;
 	struct mpool_chunk *chunk_list;

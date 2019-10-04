@@ -91,8 +91,6 @@ struct vm_locked {
 	struct vm *vm;
 };
 
-bool vm_init(spci_vcpu_count_t vcpu_count, struct mpool *ppool,
-	     struct vm **new_vm);
 struct vcpu *vm_get_vcpu(struct vm *vm, spci_vcpu_index_t vcpu_index);
 spci_vm_id_t vm_get_id(struct vm *vm);
 struct arch_vm *vm_get_arch(struct vm *vm);

@@ -24,7 +24,7 @@ void plat_console_init(void);
 
 /** Initialises any memory mappings that the console driver needs. */
 void plat_console_mm_init(struct mm_stage1_locked stage1_locked,
-			  struct mpool *ppool);
+			  struct pool *ppool);
 
 /** Puts a single character on the console. */
 void plat_console_putchar(char c);

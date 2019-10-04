@@ -22,6 +22,7 @@ use crate::mm::*;
 use crate::mpool::*;
 use crate::page::*;
 use crate::spci::*;
+use crate::spinlock::*;
 use crate::std::*;
 use crate::vm::*;
 
@@ -33,7 +34,7 @@ pub fn spci_msg_handle_architected_message(
     architected_message_replica: &SpciArchitectedMessageHeader,
     from_msg_replica: &SpciMessage,
     to_msg: &mut SpciMessage,
-    fallback: &MPool,
+    fallback: &SpinLock<Pool>,
 ) -> SpciReturn {
     let from_msg_payload_length = from_msg_replica.length as usize;
 
@@ -218,7 +219,7 @@ pub fn spci_share_memory(
     memory_region: &SpciMemoryRegion,
     memory_to_attributes: Mode,
     share: SpciMemoryShare,
-    fallback: &MPool,
+    fallback: &SpinLock<Pool>,
 ) -> SpciReturn {
     // Disallow reflexive shares as this suggests an error in the VM.
     if to_inner as *mut _ == from_inner as *mut _ {
@@ -228,7 +229,7 @@ pub fn spci_share_memory(
     // Create a local pool so any freed memory can't be used by another thread.
     // This is to ensure the original mapping can be restored if any stage of
     // the process fails.
-    let local_page_pool: MPool = MPool::new_with_fallback(fallback);
+    let local_page_pool = MPool2::new(fallback);
 
     // Obtain the single contiguous set of pages from the memory_region.
     // TODO: Add support for multiple constituent regions.

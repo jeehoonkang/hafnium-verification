@@ -40,12 +40,12 @@ use arrayvec::ArrayVec;
 /// The data is written so that it is available to all cores with the cache
 /// disabled. When switching to the partitions, the caching is initially
 /// disabled so the data must be available without the cache.
-unsafe fn copy_to_unmapped(
+unsafe fn copy_to_unmapped<P: MPoolT>(
     hypervisor_ptable: &mut PageTable<Stage1>,
     to: paddr_t,
     from: *const c_void,
     size: usize,
-    ppool: &MPool,
+    ppool: &mut P,
 ) -> bool {
     let to_end = pa_add(to, size);
 
@@ -65,12 +65,12 @@ unsafe fn copy_to_unmapped(
 }
 
 /// Loads the primary VM.
-pub unsafe fn load_primary(
+pub unsafe fn load_primary<P: MPoolT>(
     vm_manager: &mut VmManager,
     hypervisor_ptable: &mut PageTable<Stage1>,
     cpio: &MemIter,
     kernel_arg: uintreg_t,
-    ppool: &MPool,
+    ppool: &mut P,
 ) -> Result<MemIter, ()> {
     let primary_begin = layout_primary_begin();
 
@@ -129,10 +129,12 @@ pub unsafe fn load_primary(
         return Err(());
     }
 
-    if !mm_vm_unmap_hypervisor(&mut (*vm).inner.get_mut_unchecked().ptable, ppool) {
+    MemoryManager::vm_unmap_hypervisor(
+        &mut (*vm).inner.get_mut_unchecked().ptable,
+        ppool,
+    ).map_err(|_| {
         dlog!("Unable to unmap hypervisor from primary vm\n");
-        return Err(());
-    }
+    })?;
 
     vm.vcpus[0]
         .inner
@@ -195,13 +197,13 @@ fn update_reserved_ranges(
 
 /// Loads all secondary VMs into the memory ranges from the given params.
 /// Memory reserved for the VMs is added to the `reserved_ranges` of `update`.
-pub unsafe fn load_secondary(
+pub unsafe fn load_secondary<P: MPoolT>(
     vm_manager: &mut VmManager,
     hypervisor_ptable: &mut PageTable<Stage1>,
     cpio: &MemIter,
     params: &BootParams,
     update: &mut BootParamsUpdate,
-    ppool: &MPool,
+    ppool: &mut P,
 ) -> Result<(), ()> {
     let mut mem_ranges_available: ArrayVec<[MemRange; MAX_MEM_RANGES]> = ArrayVec::new();
     // static_assert(

@@ -75,20 +75,20 @@ extern "C" {
     fn plat_get_boot_params(
         stage1_locked: mm_stage1_locked,
         p: *mut BootParams,
-        ppool: *const MPool,
+        ppool: *mut Pool,
     ) -> bool;
 
     fn plat_update_boot_params(
         stage1_locked: mm_stage1_locked,
         p: *mut BootParamsUpdate,
-        ppool: *const MPool,
+        ppool: *mut Pool,
     ) -> bool;
 }
 
 /// Reads platform-specific boot parameters.
 pub fn boot_params_get(
     ptable: &mut SpinLockGuard<PageTable<Stage1>>,
-    ppool: &MPool,
+    ppool: &mut Pool,
 ) -> Option<BootParams> {
     let mut p: MaybeUninit<BootParams> = MaybeUninit::uninit();
 
@@ -103,7 +103,7 @@ pub fn boot_params_get(
 pub fn boot_params_update(
     ptable: &mut SpinLockGuard<PageTable<Stage1>>,
     p: &mut BootParamsUpdate,
-    ppool: &MPool,
+    ppool: &mut Pool,
 ) -> Result<(), ()> {
     if unsafe { plat_update_boot_params(mm_stage1_locked::from_ref(ptable), p, ppool) } {
         Ok(())

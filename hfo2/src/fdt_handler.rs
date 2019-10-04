@@ -221,7 +221,7 @@ impl<'a> FdtNode<'a> {
 pub unsafe fn map(
     stage1_ptable: &mut PageTable<Stage1>,
     fdt_addr: paddr_t,
-    ppool: &MPool,
+    ppool: &mut Pool,
 ) -> Option<FdtNode<'static>> {
     if stage1_ptable
         .identity_map(
@@ -272,7 +272,7 @@ pub unsafe fn map(
 pub unsafe fn unmap(
     stage1_ptable: &mut PageTable<Stage1>,
     fdt: &FdtHeader,
-    ppool: &MPool,
+    ppool: &mut Pool,
 ) -> Result<(), ()> {
     let fdt_addr = pa_init(fdt as *const _ as usize);
 
@@ -283,7 +283,7 @@ pub unsafe fn patch(
     stage1_ptable: &mut PageTable<Stage1>,
     fdt_addr: paddr_t,
     p: &BootParamsUpdate,
-    ppool: &MPool,
+    ppool: &mut Pool,
 ) -> Result<(), ()> {
     // Map the fdt header in.
     if stage1_ptable
